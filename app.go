@@ -1,61 +1,99 @@
 package app
 
 import (
-	"encoding/json"
-	"github.com/cosmos/cosmos-sdk/types/module"
-	"os"
-
-	"github.com/tendermint/tendermint/libs/log"
-
+	"github.com/cosmos/cosmos-sdk/baseapp"
 	"github.com/cosmos/cosmos-sdk/codec"
-	"github.com/cosmos/cosmos-sdk/x/auth"
-
-	"github.com/cosmos/cosmos-sdk/x/auth/genaccounts"
-
-	"github.com/cosmos/cosmos-sdk/x/bank"
-	distr "github.com/cosmos/cosmos-sdk/x/distribution"
-	"github.com/cosmos/cosmos-sdk/x/params"
-	"github.com/cosmos/cosmos-sdk/x/staking"
-	"github.com/cosmos/sdk-tutorials/nameservice/x/nameservice"
-
-	bam "github.com/cosmos/cosmos-sdk/baseapp"
 	sdk "github.com/cosmos/cosmos-sdk/types"
-	abci "github.com/tendermint/tendermint/abci/types"
+	"github.com/cosmos/cosmos-sdk/x/auth"
+	"github.com/cosmos/cosmos-sdk/x/params"
+	tmos "github.com/tendermint/tendermint/libs/os"
 	dbm "github.com/tendermint/tm-db"
+	"github.com/tendermint/tendermint/libs/log"
+	"maintChain/x/maintChain"
 )
 
-const appName = "maintChain"
-
-var (
-	// default home directories for the application CLI
-	DefaultCLIHome = os.ExpandEnv("$HOME/.nscli")
-
-	// DefaultNodeHome sets the folder where the applcation data and configuration will be stored
-	DefaultNodeHome = os.ExpandEnv("$HOME/.nsd")
-
-	// NewBasicManager is in charge of setting up basic module elemnets
-	ModuleBasics = module.NewBasicManager()
-
-	// account permissions
-	maccPerms = map[string][]string{}
+const (
+	appName = "tic_tac_toe"
 )
 
-type maintChainApp struct {
-	*bam.BaseApp
+type App struct {
+	*baseapp.BaseApp
+	cdc    *codec.Codec
+	logger log.Logger
+
+	// Storage keys
+	keyMain *sdk.KVStoreKey
+
+	paramsKeeper  params.Keeper
+	accountKeeper auth.AccountKeeper
+
+	keeper maintChain.Keeper
 }
 
-func NewMaintChainApp(logger log.Logger, db dbm.DB) *maintChainApp {
+func NewApp(logger log.Logger, db dbm.DB) *App {
+	cdc := MakeDefaultCodec()
 
-	// First define the top level codec that will be shared by the different modules. Note: Codec will be explained later
-	cdc := MakeCodec()
+	base := baseapp.NewBaseApp(appName, logger, db, auth.DefaultTxDecoder(cdc))
 
-	// BaseApp handles interactions with Tendermint through the ABCI protocol
-	bApp := bam.NewBaseApp(appName, logger, db, auth.DefaultTxDecoder(cdc))
-
-	var app = &maintChainApp{
-		BaseApp: bApp,
+	app := &App{
+		BaseApp: base,
 		cdc:     cdc,
+		logger:  logger,
+		keyMain: sdk.NewKVStoreKey("main"),
+	}
+
+	keyParams := sdk.NewKVStoreKey("params")
+	tkeyParams := sdk.NewTransientStoreKey("transient_params")
+
+	app.paramsKeeper = params.NewKeeper(
+		app.cdc,
+		keyParams,
+		tkeyParams,
+	)
+
+	keyAccount := sdk.NewKVStoreKey("acc")
+	// Uses default account struct
+	app.accountKeeper = auth.NewAccountKeeper(
+		app.cdc,
+		keyAccount,
+		app.paramsKeeper.Subspace(auth.DefaultParamspace),
+		auth.ProtoBaseAccount,
+	)
+
+	keyMaintChain := sdk.NewKVStoreKey("maintChain")
+	app.keeper = maintChain.NewKeeper(cdc, keyMaintChain)
+
+	app.Router().
+		AddRoute("maintChain", maintChain.NewHandler(app.keeper))
+
+	app.QueryRouter().
+		AddRoute(auth.QuerierRoute, auth.NewQuerier(app.accountKeeper)).
+		AddRoute("maintChain", maintChain.NewQuerier(app.keeper))
+
+	app.MountStores(
+		app.keyMain,
+		keyParams,
+		tkeyParams,
+		keyAccount,
+		keyMaintChain,
+	)
+
+	if err := app.LoadLatestVersion(app.keyMain); err != nil {
+		tmos.Exit(err.Error())
 	}
 
 	return app
 }
+
+// Uses go-amino which is a fork of protobuf3
+// Here the codec implementation is injected into different modules
+func MakeDefaultCodec() *codec.Codec {
+	var cdc = codec.New()
+	maintChain.RegisterCodec(cdc)
+	auth.RegisterCodec(cdc)
+	sdk.RegisterCodec(cdc)
+	codec.RegisterCrypto(cdc)
+	return cdc
+}
+
+type GenesisState struct{}
